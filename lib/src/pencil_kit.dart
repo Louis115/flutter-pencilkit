@@ -145,6 +145,13 @@ class _PencilKitState extends State<PencilKit> {
       return _buildUnAvailable();
     }
   }
+
+  @override
+  void dispose() {
+    _controller?.dispose(); // Dispose of the controller
+    _controller = null;
+    super.dispose();
+  }
 }
 
 class PencilKitController {
@@ -244,5 +251,31 @@ class PencilKitController {
   /// ```
   Future<String> getBase64Data() async {
     return await _channel.invokeMethod('getBase64Data') as String;
+  }
+
+  /// Load drawing data from base 64 encoded form.
+  /// ```
+  /// Throws an [Error] if failed
+  /// ```
+  /// Example
+  /// ```dart
+  /// try {
+  ///  await controller.loadBase64Data(base64Data);
+  /// // handle success
+  /// } catch (e) {
+  /// // handle error
+  /// }
+  /// ```
+  Future<void> loadBase64Data(String base64Data) =>
+      _channel.invokeMethod('loadBase64Data', base64Data);
+
+  /// Dispose the controller and release resources
+  void dispose() {
+    try {
+      _channel.invokeMethod('dispose');
+    } catch (e) {
+      print('Error disposing controller: $e');
+    }
+    _channel.setMethodCallHandler(null); // Remove the method call handler
   }
 }
