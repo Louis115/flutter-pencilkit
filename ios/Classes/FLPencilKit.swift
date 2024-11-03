@@ -81,6 +81,8 @@ class FLPencilKit: NSObject, FlutterPlatformView {
         load(pencilKitView: pencilKitView, call: call, result: result)
       case "getBase64Data":
         getBase64Data(pencilKitView: pencilKitView, call: call, result: result)
+      case "loadBase64Data":
+        loadBase64Data(pencilKitView: pencilKitView, call: call, result: result)
       case "applyProperties":
         pencilKitView.applyProperties(properties: call.arguments as! [String: Any?])
         result(nil)
@@ -88,6 +90,11 @@ class FLPencilKit: NSObject, FlutterPlatformView {
         break
       }
     }
+  }
+
+  deinit {
+    // Remove method channel handler to prevent potential memory leaks
+    methodChannel.setMethodCallHandler(nil)
   }
 
   @available(iOS 13, *)
@@ -122,6 +129,21 @@ class FLPencilKit: NSObject, FlutterPlatformView {
     result(base64Data)
   }
 
+  @available(iOS 13, *)
+  private func loadBase64Data(
+    pencilKitView: PencilKitView,
+    call: FlutterMethodCall,
+    result: FlutterResult
+  ) {
+    do {
+      let base64Data = call.arguments as! String;
+      try pencilKitView.loadBase64Data(base64Data: base64Data)
+      result(nil)
+    } catch {
+      result(FlutterError(code: "NATIVE_ERROR", message: error.localizedDescription, details: nil))
+    }
+  }
+
   private func parseArguments(_ arguments: Any?) -> (URL, Bool) {
     guard let arguments = arguments as? [Any] else { fatalError() }
     return (URL(fileURLWithPath: arguments[0] as! String), arguments[1] as! Bool)
@@ -144,7 +166,6 @@ private func createCanvasView(delegate: PKCanvasViewDelegate) -> PKCanvasView {
 @available(iOS 13.0, *)
 private class PencilKitView: UIView {
   private lazy var canvasView: PKCanvasView = createCanvasView(delegate: self)
-
   private var toolPickerForIos14: PKToolPicker? = nil
   private var toolPicker: PKToolPicker? {
     if #available(iOS 14.0, *) {
@@ -158,7 +179,6 @@ private class PencilKitView: UIView {
       return toolPicker
     }
   }
-
   private let channel: FlutterMethodChannel
 
   @available(*, unavailable)
@@ -174,9 +194,7 @@ private class PencilKitView: UIView {
     channel = methodChannel
     super.init(frame: frame)
 
-    // layout
     layoutCanvasView()
-
     toolPicker?.addObserver(canvasView)
     toolPicker?.addObserver(self)
     toolPicker?.setVisible(true, forFirstResponder: canvasView)
@@ -192,38 +210,29 @@ private class PencilKitView: UIView {
     ])
   }
 
-  deinit {
+  func cleanup() {
+    // Ensure tool picker and method channel handlers are released
+    toolPicker?.setVisible(false, forFirstResponder: canvasView)
     toolPicker?.removeObserver(canvasView)
     toolPicker?.removeObserver(self)
+    channel.setMethodCallHandler(nil)
+    canvasView.removeFromSuperview()
   }
 
-  func clear() {
-    canvasView.drawing = PKDrawing()
+  deinit {
+    cleanup()
   }
 
-  func undo() {
-    canvasView.undoManager?.undo()
-  }
-
-  func redo() {
-    canvasView.undoManager?.redo()
-  }
-
-  func show() {
-    canvasView.becomeFirstResponder()
-  }
-
-  func hide() {
-    canvasView.resignFirstResponder()
-  }
+  func clear() { canvasView.drawing = PKDrawing() }
+  func undo() { canvasView.undoManager?.undo() }
+  func redo() { canvasView.undoManager?.redo() }
+  func show() { canvasView.becomeFirstResponder() }
+  func hide() { canvasView.resignFirstResponder() }
 
   func save(url: URL, withBase64Data: Bool) throws -> String? {
     let data = canvasView.drawing.dataRepresentation()
     try data.write(to: url)
-    if withBase64Data {
-      return data.base64EncodedString()
-    }
-    return nil
+    return withBase64Data ? data.base64EncodedString() : nil
   }
 
   func load(url: URL, withBase64Data: Bool) throws -> String? {
@@ -237,14 +246,19 @@ private class PencilKitView: UIView {
     canvasView = newCanvasView
     layoutCanvasView()
 
-    if withBase64Data {
-      return drawing.dataRepresentation().base64EncodedString()
-    }
-    return nil
+    return withBase64Data ? drawing.dataRepresentation().base64EncodedString() : nil
   }
 
   func getBase64Data() -> String {
-    canvasView.drawing.dataRepresentation().base64EncodedString()
+    return canvasView.drawing.dataRepresentation().base64EncodedString()
+  }
+
+  func loadBase64Data(base64Data: String) throws {
+    guard let data = Data(base64Encoded: base64Data) else {
+      throw NSError(domain: "InvalidBase64", code: 0, userInfo: nil)
+    }
+    let drawing = try PKDrawing(data: data)
+    canvasView.drawing = drawing
   }
 
   func applyProperties(properties: [String: Any?]) {
@@ -258,8 +272,7 @@ private class PencilKitView: UIView {
       canvasView.isRulerActive = isRulerActive
     }
     if #available(iOS 14.0, *), let drawingPolicy = properties["drawingPolicy"] as? Int {
-      canvasView
-        .drawingPolicy = PKCanvasViewDrawingPolicy(rawValue: UInt(drawingPolicy)) ?? .default
+      canvasView.drawingPolicy = PKCanvasViewDrawingPolicy(rawValue: UInt(drawingPolicy)) ?? .default
     }
     if let isOpaque = properties["isOpaque"] as? Bool {
       canvasView.isOpaque = isOpaque
@@ -270,11 +283,9 @@ private class PencilKitView: UIView {
   }
 
   private func synchronizeCanvasViewProperties(old: PKCanvasView, new: PKCanvasView) {
-    if let toolPicker {
-      toolPicker.removeObserver(old)
-      toolPicker.addObserver(new)
-      toolPicker.setVisible(true, forFirstResponder: new)
-    }
+    toolPicker?.removeObserver(old)
+    toolPicker?.addObserver(new)
+    toolPicker?.setVisible(true, forFirstResponder: new)
 
     new.alwaysBounceVertical = old.alwaysBounceVertical
     new.alwaysBounceHorizontal = old.alwaysBounceHorizontal
@@ -315,7 +326,6 @@ extension UIColor {
     let red = Double((hex >> 16) & 0xFF) / 255
     let green = Double((hex >> 8) & 0xFF) / 255
     let blue = Double((hex >> 0) & 0xFF) / 255
-
     self.init(red: red, green: green, blue: blue, alpha: alpha)
   }
 }
